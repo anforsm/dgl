@@ -48,7 +48,7 @@ class SAGEConv(nn.Module):
     out_feats : int
         Output feature size; i.e, the number of dimensions of :math:`h_i^{(l+1)}`.
     aggregator_type : str
-        Aggregator type to use (``mean``, ``gcn``, ``pool``, ``lstm``).
+        Aggregator type to use (``mean``, ``gcn``, ``meanpool``, ``maxpool``, ``lstm``).
     feat_drop : float
         Dropout rate on features, default: ``0``.
     bias : bool
@@ -70,7 +70,7 @@ class SAGEConv(nn.Module):
     >>> g = dgl.graph(([0,1,2,3,2,5], [1,2,3,4,0,3]))
     >>> g = dgl.add_self_loop(g)
     >>> feat = th.ones(6, 10)
-    >>> conv = SAGEConv(10, 2, 'pool')
+    >>> conv = SAGEConv(10, 2, 'maxpool')
     >>> res = conv(g, feat)
     >>> res
     tensor([[-1.0888, -2.1099],
@@ -103,7 +103,7 @@ class SAGEConv(nn.Module):
                  norm=None,
                  activation=None):
         super(SAGEConv, self).__init__()
-        valid_aggre_types = {'mean', 'gcn', 'pool', 'lstm'}
+        valid_aggre_types = {'mean', 'gcn', 'maxpool', 'meanpool', 'lstm'}
         if aggregator_type not in valid_aggre_types:
             raise DGLError(
                 'Invalid aggregator_type. Must be one of {}. '
@@ -117,7 +117,7 @@ class SAGEConv(nn.Module):
         self.feat_drop = nn.Dropout(feat_drop)
         self.activation = activation
         # aggregator type: mean/pool/lstm/gcn
-        if aggregator_type == 'pool':
+        if aggregator_type == 'maxpool' or aggregator_type == 'meanpool':
             self.fc_pool = nn.Linear(self._in_src_feats, self._in_src_feats)
         if aggregator_type == 'lstm':
             self.lstm = nn.LSTM(self._in_src_feats, self._in_src_feats, batch_first=True)
@@ -143,7 +143,7 @@ class SAGEConv(nn.Module):
         The LSTM module is using xavier initialization method for its weights.
         """
         gain = nn.init.calculate_gain('relu')
-        if self._aggre_type == 'pool':
+        if self._aggre_type == 'pool' or self._aggre_type == 'meanpool':
             nn.init.xavier_uniform_(self.fc_pool.weight, gain=gain)
         if self._aggre_type == 'lstm':
             self.lstm.reset_parameters()
@@ -252,9 +252,13 @@ class SAGEConv(nn.Module):
                 h_neigh = (graph.dstdata['neigh'] + graph.dstdata['h']) / (degs.unsqueeze(-1) + 1)
                 if not lin_before_mp:
                     h_neigh = self.fc_neigh(h_neigh)
-            elif self._aggre_type == 'pool':
+            elif self._aggre_type == 'maxpool':
                 graph.srcdata['h'] = F.relu(self.fc_pool(feat_src))
                 graph.update_all(msg_fn, fn.max('m', 'neigh'))
+                h_neigh = self.fc_neigh(graph.dstdata['neigh'])
+            elif self._aggre_type == 'meanpool':
+                graph.srcdata['h'] = F.relu(self.fc_pool(feat_src))
+                graph.update_all(msg_fn, fn.mean('m', 'neigh'))
                 h_neigh = self.fc_neigh(graph.dstdata['neigh'])
             elif self._aggre_type == 'lstm':
                 graph.srcdata['h'] = feat_src
